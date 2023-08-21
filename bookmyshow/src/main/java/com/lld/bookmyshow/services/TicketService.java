@@ -10,6 +10,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.lld.bookmyshow.exceptions.BookingTimeClosedException;
+import com.lld.bookmyshow.exceptions.CancelWindowExpiredException;
 import com.lld.bookmyshow.exceptions.InvalidArgumentException;
 import com.lld.bookmyshow.exceptions.SeatNotAvailableException;
 import com.lld.bookmyshow.models.Seat;
@@ -29,6 +31,8 @@ import com.lld.bookmyshow.repositories.UserRepository;
 @Service
 public class TicketService {
 	
+	private static final int THIRTY_MINS = 1800000;
+	
 	private final SeatRepository seatRepository;
 	private final ShowSeatRepository showSeatRepository;
 	private final ShowRepository showRepository;
@@ -46,7 +50,7 @@ public class TicketService {
 	}
 	
 	@Transactional(isolation = Isolation.SERIALIZABLE, timeout = 2)
-	public Ticket bookTicket(List<Long> seatIds, Long showId, Long userId) throws InvalidArgumentException, SeatNotAvailableException {
+	public Ticket bookTicket(List<Long> seatIds, Long showId, Long userId) throws InvalidArgumentException, SeatNotAvailableException, BookingTimeClosedException {
 		
 		/*
 		 *For these seatIds, get corresponding showSeats
@@ -64,12 +68,21 @@ public class TicketService {
 		 *If b: throw exception
 		 */
 		
-		List<Seat> seats = this.seatRepository.findAllById(seatIds);
 		Optional<Show> showOptional = this.showRepository.findById(showId);
 		if(showOptional.isEmpty()) {
 			throw new InvalidArgumentException("Show by: "+showId + " does not exist");
 		}
 		Show show = showOptional.get();
+		
+		//Checking if there is still atleast 30 minutes to start the show, else throw exception
+		Date currentTime = new Date();
+		Date showDate = show.getStartTime();
+		
+		if(showDate.getTime() - currentTime.getTime() <= THIRTY_MINS) {
+			throw new BookingTimeClosedException("Booking time for this show is less than 30 minutes. Booking closed!");
+		}
+		
+		List<Seat> seats = this.seatRepository.findAllById(seatIds);
 		
 		//Lock will be taken on the show seats
 		List<ShowSeat> showSeats = this.showSeatRepository.findAllBySeatInAndShow(seats, show);
@@ -107,5 +120,40 @@ public class TicketService {
 	
 	// commit;
 	// Lock will be released
+	
+	public Ticket cancelTicket(Long ticketId) throws Exception {
+		
+		
+		//Check if valid ticket
+		//Check if time for show is atleast 30 minutes left
+		
+		Optional<Ticket> ticketOptional = this.ticketRepository.findById(ticketId);
+		if(ticketOptional.isEmpty()) {
+			throw new InvalidArgumentException("Ticket with id: "+ticketId+" does not exist.");
+		}
+		
+		Ticket ticket = ticketOptional.get();
+		Show show = ticket.getShow();
+		
+		//Checking if there is still atleast 30 minutes to start the show, else throw exception
+		Date currentTime = new Date();
+		Date showDate = show.getStartTime();
+		
+		if(showDate.getTime() - currentTime.getTime() <= THIRTY_MINS) {
+			throw new CancelWindowExpiredException("Cancel window has expired. You cannot cancel the tickets anymore!!");
+		}
+		
+		List<Seat> seats = ticket.getSeats();
+		List<ShowSeat> showSeats = this.showSeatRepository.findAllBySeatInAndShow(seats, show);
+		
+		for(ShowSeat showSeat : showSeats) {
+			showSeat.setStatus(ShowSeatStatus.AVAILABLE);
+			this.showSeatRepository.save(showSeat);
+		}
+		ticket.setStatus(TicketStatus.CANCELLED);
+		Ticket savedTicket = this.ticketRepository.save(ticket);
+		
+		return savedTicket;
+	}
 
 }
